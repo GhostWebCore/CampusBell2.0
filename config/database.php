@@ -1,12 +1,4 @@
 <?php
-/**
- * config/database.php
- *
- * Single PDO connection factory. Keep credentials out of version control —
- * in real deployment, pull these from environment variables instead of
- * hardcoding them here.
- */
-
 declare(strict_types=1);
 
 function get_db_connection(): PDO
@@ -17,30 +9,36 @@ function get_db_connection(): PDO
         return $pdo;
     }
 
-    $host    = getenv('DB_HOST') ?: 'sql312.infinityfree.com';
-    $dbname  = getenv('DB_NAME') ?: 'if0_42257174_campusbell';
-    $user    = getenv('DB_USER') ?: 'if0_42257174';
-    $pass    = getenv('DB_PASS') ?: 'iSVqC0CBsml7';
-    $charset = 'utf8mb4';
+    $host   = getenv('DB_HOST') ?: 'dpg-d8tn8j67r5hc73aik9ig-a.oregon-postgres.render.com';
+    $port   = getenv('DB_PORT') ?: '5432';
+    $dbname = getenv('DB_NAME') ?: 'campus_bell';
+    $user   = getenv('DB_USER') ?: 'campus_bell_user';
+    $pass   = getenv('DB_PASS') ?: '4gP8Jmz7pVsGIgWyLRkucAfiKxGpy1o8';
 
-    $dsn = "mysql:host={$host};dbname={$dbname};charset={$charset}";
+    $dsn = "pgsql:host={$host};port={$port};dbname={$dbname};sslmode=require";
 
     $options = [
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES   => false, // use real prepared statements
+        PDO::ATTR_EMULATE_PREPARES   => false,
     ];
 
     try {
         $pdo = new PDO($dsn, $user, $pass, $options);
     } catch (PDOException $e) {
-        // Never leak DB connection details to the client.
         error_log('DB connection failed: ' . $e->getMessage());
+
         http_response_code(500);
         header('Content-Type: application/json');
-        echo json_encode(['success' => false, 'message' => 'Server error. Please try again later.']);
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Database connection failed.'
+        ]);
+
         exit;
     }
 
     return $pdo;
 }
+?>
