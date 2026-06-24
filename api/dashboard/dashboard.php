@@ -1,41 +1,6 @@
 <?php
 /**
- * api/dashboard/dashboard.php
- *
- * Single GET endpoint that returns all dynamic data the dashboard needs
- * in ONE request, so the page only makes a single round-trip on load.
- *
- * Response shape:
- * {
- *   success: true,
- *   stats: {
- *     bells_today:       int,   -- active schedules that fire today
- *     bells_completed:   int,   -- how many have already passed
- *     bells_pending:     int,   -- how many are still to fire
- *     active_schedules:  int,   -- total enabled schedule rows
- *     total_announcements: int, -- visible announcements
- *     upcoming_events:   int,   -- events from today onward this month
- *     active_emergency:  bool,  -- is an emergency alert live right now?
- *   },
- *   next_bell: {              -- the very next bell that hasn't fired yet
- *     bell_name: string,
- *     ring_time: string,      -- "HH:MM:SS"
- *     ring_time_fmt: string,  -- "g:i A"
- *     seconds_until: int,     -- seconds from now until ring time
- *     zones: string,          -- comma-separated zone codes
- *   } | null,
- *   recent_activity: [        -- last 6 items across schedules + announcements + emergency
- *     { icon_class, color_class, text, time_fmt }
- *   ],
- *   csrf_token: string
- * }
- *
- * Security:
- *   - require_login.php halts unauthenticated requests immediately
- *   - Read-only endpoint — no CSRF needed for GET, but we issue a
- *     fresh token anyway so other pages can use it after a refresh
- *   - All DB queries use PDO prepared statements
- *   - No user-supplied input reaches SQL (only session data used)
+ * api/dashboard/dashboard.php  –  PostgreSQL version
  */
 
 declare(strict_types=1);
@@ -65,7 +30,6 @@ require_once __DIR__ . '/../../includes/require_login.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../includes/csrf.php';
 
-// Only GET is supported
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
     http_response_code(405);
     echo json_encode(['success' => false, 'message' => 'Method not allowed.']);
@@ -73,38 +37,23 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
 }
 
 try {
-    $pdo  = get_db_connection();
-    $now  = new DateTimeImmutable('now');
+    $pdo   = get_db_connection();
+    $now   = new DateTimeImmutable('now');
     $today = $now->format('Y-m-d');
 
     // ---- 1. TODAY'S BELLS  ------------------------------------
-    // A bell fires "today" when its days_mask bit for today's weekday
-    // is set and the schedule is active.
-    // PHP date('N') → 1=Mon … 7=Sun, which maps to bit (N-1) in our mask.
+    // PHP date('N') → 1=Mon … 7=Sun → bit (N-1)
+    // PostgreSQL bitwise: (days_mask & bit) = bit  (same syntax, works natively)
     $todayBit = 1 << ((int)$now->format('N') - 1);
 
     $bellsToday = (int)$pdo->query(
         "SELECT COUNT(*) FROM tbl_schedules
-         WHERE is_active = 1 AND (days_mask & $todayBit) = $todayBit"
+         WHERE is_active = TRUE AND (days_mask & $todayBit) = $todayBit"
     )->fetchColumn();
 
-    // Completed = active today and ring_time is already past
-    $bellsCompleted = (int)$pdo->prepare(
-        "SELECT COUNT(*) FROM tbl_schedules
-         WHERE is_active = 1
-           AND (days_mask & $todayBit) = $todayBit
-           AND ring_time < :now_time"
-    )->execute([':now_time' => $now->format('H:i:s')]) ? $pdo->prepare(
-        "SELECT COUNT(*) FROM tbl_schedules
-         WHERE is_active = 1
-           AND (days_mask & $todayBit) = $todayBit
-           AND ring_time < :now_time"
-    )->execute([':now_time' => $now->format('H:i:s')]) : 0;
-
-    // Run properly with a reusable prepared statement
     $stmtCompleted = $pdo->prepare(
         "SELECT COUNT(*) FROM tbl_schedules
-         WHERE is_active = 1
+         WHERE is_active = TRUE
            AND (days_mask & $todayBit) = $todayBit
            AND ring_time < :now_time"
     );
@@ -114,46 +63,52 @@ try {
 
     // ---- 2. ACTIVE SCHEDULE COUNT  ---------------------------
     $activeSchedules = (int)$pdo->query(
-        'SELECT COUNT(*) FROM tbl_schedules WHERE is_active = 1'
+        'SELECT COUNT(*) FROM tbl_schedules WHERE is_active = TRUE'
     )->fetchColumn();
 
     // ---- 3. ANNOUNCEMENTS COUNT  -----------------------------
     $totalAnnouncements = (int)$pdo->query(
-        'SELECT COUNT(*) FROM tbl_announcements WHERE is_deleted = 0'
+        'SELECT COUNT(*) FROM tbl_announcements WHERE is_deleted = FALSE'
     )->fetchColumn();
 
     // ---- 4. UPCOMING EVENTS THIS MONTH  ----------------------
     $firstOfMonth = $now->format('Y-m-01');
     $lastOfMonth  = $now->format('Y-m-t');
     $stmtEvents   = $pdo->prepare(
-        'SELECT COUNT(*) FROM tbl_events
-         WHERE is_deleted = 0
+        "SELECT COUNT(*) FROM tbl_events
+         WHERE is_deleted = FALSE
            AND event_date BETWEEN :first AND :last
-           AND event_date >= :today'
+           AND event_date >= :today"
     );
     $stmtEvents->execute([':first' => $firstOfMonth, ':last' => $lastOfMonth, ':today' => $today]);
     $upcomingEvents = (int)$stmtEvents->fetchColumn();
 
     // ---- 5. ACTIVE EMERGENCY  --------------------------------
+    // MySQL used double-quoted strings for values; PostgreSQL requires single quotes.
     $activeEmergency = (bool)$pdo->query(
-        'SELECT COUNT(*) FROM tbl_emergency_logs WHERE status = "active"'
+        "SELECT COUNT(*) FROM tbl_emergency_logs WHERE status = 'active'"
     )->fetchColumn();
 
     // ---- 6. NEXT BELL  ---------------------------------------
-    // The next bell that fires today and hasn't passed yet.
+    // MySQL: TIME_FORMAT(t, '%h:%i %p')  →  PostgreSQL: TO_CHAR(t, 'HH12:MI AM')
+    // MySQL: TIMESTAMPDIFF(SECOND, a, b) →  PostgreSQL: EXTRACT(EPOCH FROM (b - a))
+    // MySQL: CONCAT(date, ' ', time)     →  PostgreSQL: (date || ' ' || time)::timestamp
     $stmtNext = $pdo->prepare(
         "SELECT
              s.bell_name,
-             s.ring_time,
-             TIME_FORMAT(s.ring_time, '%h:%i %p') AS ring_time_fmt,
-             GROUP_CONCAT(sz.zone_code ORDER BY sz.zone_code SEPARATOR ', ') AS zones,
-             TIMESTAMPDIFF(SECOND, :now_ts, CONCAT(:today_date, ' ', s.ring_time)) AS seconds_until
+             s.ring_time::text                                             AS ring_time,
+             TO_CHAR(s.ring_time, 'HH12:MI AM')                          AS ring_time_fmt,
+             STRING_AGG(sz.zone_code, ', ' ORDER BY sz.zone_code)        AS zones,
+             EXTRACT(EPOCH FROM (
+                 (:today_date || ' ' || s.ring_time::text)::timestamp
+                 - :now_ts::timestamp
+             ))::int                                                       AS seconds_until
          FROM tbl_schedules s
          LEFT JOIN tbl_schedule_zones sz ON sz.sched_id = s.sched_id
-         WHERE s.is_active = 1
+         WHERE s.is_active = TRUE
            AND (s.days_mask & $todayBit) = $todayBit
            AND s.ring_time > :now_time
-         GROUP BY s.sched_id
+         GROUP BY s.sched_id, s.bell_name, s.ring_time
          ORDER BY s.ring_time ASC
          LIMIT 1"
     );
@@ -170,23 +125,18 @@ try {
     }
 
     // ---- 7. RECENT ACTIVITY  ----------------------------------
-    // Merge the last 6 items from three sources:
-    //   a) Recent bell rings  (schedules that fired today, newest first)
-    //   b) Recent announcements
-    //   c) Recent emergency logs
-    // We use a UNION inside PHP to avoid a complex cross-table SQL UNION
-    // that would be harder to read and maintain.
 
     $activity = [];
 
-    // a) Bells that already fired today (passed ring_time)
+    // a) Bells that already fired today
+    // MySQL: TIME_FORMAT(t, '%h:%i %p')  →  PostgreSQL: TO_CHAR(t, 'HH12:MI AM')
     $stmtBells = $pdo->prepare(
         "SELECT
-             bell_name                       AS text,
-             TIME_FORMAT(ring_time,'%h:%i %p') AS time_fmt,
-             'bell'                          AS source
+             bell_name                          AS text,
+             TO_CHAR(ring_time, 'HH12:MI AM')  AS time_fmt,
+             'bell'                             AS source
          FROM tbl_schedules
-         WHERE is_active = 1
+         WHERE is_active = TRUE
            AND (days_mask & $todayBit) = $todayBit
            AND ring_time < :now_time
          ORDER BY ring_time DESC
@@ -203,11 +153,11 @@ try {
         ];
     }
 
-    // b) Most recent announcements (today or yesterday)
+    // b) Most recent announcements
     $stmtAnn = $pdo->prepare(
         'SELECT title, created_at
          FROM tbl_announcements
-         WHERE is_deleted = 0
+         WHERE is_deleted = FALSE
          ORDER BY created_at DESC
          LIMIT 3'
     );
@@ -224,10 +174,10 @@ try {
 
     // c) Most recent emergency log entries
     $stmtEmLog = $pdo->prepare(
-        'SELECT emergency_type, status, triggered_at
+        "SELECT emergency_type, status, triggered_at
          FROM tbl_emergency_logs
          ORDER BY triggered_at DESC
-         LIMIT 2'
+         LIMIT 2"
     );
     $stmtEmLog->execute();
     foreach ($stmtEmLog->fetchAll() as $row) {
@@ -241,26 +191,24 @@ try {
         ];
     }
 
-    // Sort merged activity descending by sort_key, take top 6
     usort($activity, fn($a, $b) => strcmp($b['sort_key'], $a['sort_key']));
     $activity = array_slice($activity, 0, 6);
-
-    // Remove sort_key before sending to client (internal only)
     foreach ($activity as &$item) unset($item['sort_key']);
     unset($item);
 
     // ---- 8. UPCOMING EVENTS LIST (next 5) --------------------
     $stmtUpcoming = $pdo->prepare(
-        'SELECT event_title, event_date, color
+        "SELECT event_title, event_date, color
          FROM tbl_events
-         WHERE is_deleted = 0
+         WHERE is_deleted = FALSE
            AND event_date >= :today
          ORDER BY event_date ASC
-         LIMIT 5'
+         LIMIT 5"
     );
     $stmtUpcoming->execute([':today' => $today]);
     $upcomingList = $stmtUpcoming->fetchAll();
     foreach ($upcomingList as &$ev) {
+        // MySQL: date()  →  PostgreSQL returns a proper date string, PHP handles it fine
         $ev['date_fmt'] = date('M j', strtotime($ev['event_date']));
     }
     unset($ev);
