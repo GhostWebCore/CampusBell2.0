@@ -1,10 +1,13 @@
 FROM php:8.2-apache
 
-# Enable Apache rewrite (important for most PHP apps)
+RUN apt-get update && apt-get install -y \
+    libmariadb-dev \
+    pkg-config \
+    && docker-php-ext-install pdo pdo_mysql mysqli \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 RUN a2enmod rewrite
 
-# Copy your app into the container
 COPY . /var/www/html/
 
-# Set correct permissions
 RUN chown -R www-data:www-data /var/www/html
