@@ -17,10 +17,10 @@ function get_db_connection(): PDO
         return $pdo;
     }
 
-    $host    = getenv('DB_HOST') ?: '127.0.0.1';
-    $dbname  = getenv('DB_NAME') ?: 'bell';
-    $user    = getenv('DB_USER') ?: 'root';
-    $pass    = getenv('DB_PASS') ?: 'M@c1nt0sh';
+    $host    = getenv('DB_HOST') ?: 'sql312.infinityfree.com';
+    $dbname  = getenv('DB_NAME') ?: 'if0_42257174_campusbell';
+    $user    = getenv('DB_USER') ?: 'if0_42257174';
+    $pass    = getenv('DB_PASS') ?: 'iSVqC0CBsml7';
     $charset = 'utf8mb4';
 
     $dsn = "mysql:host={$host};dbname={$dbname};charset={$charset}";
