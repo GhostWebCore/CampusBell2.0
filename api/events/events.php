@@ -6,7 +6,7 @@
 declare(strict_types=1);
 
 header('Content-Type: application/json');
-
+date_default_timezone_set('Asia/Manila');
 register_shutdown_function(function () {
     $err = error_get_last();
     if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {

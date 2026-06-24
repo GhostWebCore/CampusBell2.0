@@ -6,7 +6,7 @@
 declare(strict_types=1);
 
 header('Content-Type: application/json');
-
+date_default_timezone_set('Asia/Manila');
 // ----------------------------------------------------------------
 // Fatal-error safety net
 // ----------------------------------------------------------------
