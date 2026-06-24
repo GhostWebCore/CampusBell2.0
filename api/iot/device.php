@@ -114,7 +114,7 @@ $stmtSc = $pdo->prepare("
       AND (s.days_mask & :day) <> 0
       AND (z.zone_code = :zone OR z.zone_code = 'All')
       AND s.ring_time BETWEEN
-          (:timeStart::time - INTERVAL '1 second')
+          (:timeStart::time - INTERVAL '3 second')
           AND :timeEnd::time
 ");
 $stmtSc->execute([
