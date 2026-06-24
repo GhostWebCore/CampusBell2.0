@@ -1,3 +1,3 @@
 <?php
 
-header('refresh: login.php');
+header('location: login.php');
