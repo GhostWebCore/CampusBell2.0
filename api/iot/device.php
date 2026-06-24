@@ -16,7 +16,6 @@ register_shutdown_function(function () {
     }
 });
 
-
 require_once __DIR__ . '/../../config/database.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
@@ -37,14 +36,14 @@ if ($zone === '') {
     exit;
 }
 
-
 $pdo = get_db_connection();
 
+// MySQL: is_active = 1  ?  PostgreSQL: is_active = TRUE
 $stmtDevice = $pdo->prepare(
     'SELECT device_id
-    FROM tbl_devices
-    WHERE device_key = :key AND zone_code = :zone AND is_active = 1
-    LIMIT 1'
+     FROM tbl_devices
+     WHERE device_key = :key AND zone_code = :zone AND is_active = TRUE
+     LIMIT 1'
 );
 $stmtDevice->execute([':key' => $deviceKey, ':zone' => $zone]);
 $device = $stmtDevice->fetch();
@@ -55,36 +54,36 @@ if (!$device) {
 }
 
 try {
-    $pdo->prepare('UPDATE tbl_devices SET last_seen_at = NOW() WHERE device_id = :id')->execute([':id' => $device['device_id']]);
+    // MySQL: NOW()  ?  PostgreSQL: NOW() (same, no change needed)
+    $pdo->prepare('UPDATE tbl_devices SET last_seen_at = NOW() WHERE device_id = :id')
+        ->execute([':id' => $device['device_id']]);
 } catch (Throwable $e) {
     error_log('device.php last_seen_at update failed: ' . $e->getMessage());
 }
 
-
-// Emergency
+// ---- Emergency -----------------------------------------------
 $stmtEm = $pdo->prepare(
-    "SELECT log_id, emergency_type,note
-    FROM tbl_emergency_logs
-    WHERE status = 'active'
-    ORDER BY triggered_at DESC
-    LIMIT 1"
+    "SELECT log_id, emergency_type, note
+     FROM tbl_emergency_logs
+     WHERE status = 'active'
+     ORDER BY triggered_at DESC
+     LIMIT 1"
 );
-
 $stmtEm->execute();
 $emergency = $stmtEm->fetch();
 
-if($emergency){
+if ($emergency) {
     echo json_encode([
-        'priority'        => 'emergency',
-        'label'           => $emergency['emergency_type'],
-        'note'            => $emergency['note']
+        'priority' => 'emergency',
+        'label'    => $emergency['emergency_type'],
+        'note'     => $emergency['note'],
     ]);
     exit;
 }
 
-
-
-
+// ---- Day mask ------------------------------------------------
+// MySQL: date('w') ? 0=Sun…6=Sat
+// PostgreSQL uses the same bit map; PHP-side calculation is unchanged.
 $dayMap = [
     0 => 64, // Sun
     1 => 1,  // Mon
@@ -92,12 +91,17 @@ $dayMap = [
     3 => 4,  // Wed
     4 => 8,  // Thu
     5 => 16, // Fri
-    6 => 32  // Sat
+    6 => 32, // Sat
 ];
-
-$todayBit = $dayMap[date("w")];
+$todayBit    = $dayMap[(int)date('w')];
 $currentTime = date('H:i:s');
 
+// ---- Schedules -----------------------------------------------
+// MySQL: SUBTIME(:timeStart, '00:00:01')
+// PostgreSQL: :timeStart::time - INTERVAL '1 second'
+//
+// MySQL: s.ring_time BETWEEN expr AND :timeEnd
+// PostgreSQL: same BETWEEN syntax works; just fix the SUBTIME call.
 $stmtSc = $pdo->prepare("
     SELECT
         s.sched_id,
@@ -105,102 +109,88 @@ $stmtSc = $pdo->prepare("
         s.ring_time,
         s.duration_s
     FROM tbl_schedules s
-    JOIN tbl_schedule_zones z
-        ON s.sched_id = z.sched_id
-    WHERE s.is_active = 1
-      AND (s.days_mask & :day) != 0
+    JOIN tbl_schedule_zones z ON s.sched_id = z.sched_id
+    WHERE s.is_active = TRUE
+      AND (s.days_mask & :day) <> 0
       AND (z.zone_code = :zone OR z.zone_code = 'All')
       AND s.ring_time BETWEEN
-          SUBTIME(:timeStart, '00:00:01')
-          AND :timeEnd
+          (:timeStart::time - INTERVAL '1 second')
+          AND :timeEnd::time
 ");
-
 $stmtSc->execute([
     ':day'       => $todayBit,
     ':zone'      => $zone,
     ':timeStart' => $currentTime,
-    ':timeEnd'   => $currentTime
+    ':timeEnd'   => $currentTime,
 ]);
 $schedules = $stmtSc->fetchAll(PDO::FETCH_ASSOC);
 
 if (!empty($schedules)) {
     echo json_encode([
         'priority' => 'schedule',
-        'data'     => $schedules
+        'data'     => $schedules,
     ]);
+    exit;
 }
 
-
-// Announcement
+// ---- Announcements -------------------------------------------
+// MySQL: CURDATE()                        ?  PostgreSQL: CURRENT_DATE
+// MySQL: CURDATE() + INTERVAL 1 DAY      ?  PostgreSQL: CURRENT_DATE + INTERVAL '1 day'
+// MySQL: NOW() - INTERVAL 60 MINUTE      ?  PostgreSQL: NOW() - INTERVAL '60 minutes'
 $stmtAn = $pdo->prepare("
     SELECT *
     FROM tbl_announcements
     WHERE (audience = :zone OR audience = 'ALL')
-    AND created_at >= CURDATE()
-    AND created_at < CURDATE() + INTERVAL 1 DAY
-    AND (
-        last_played_at IS NULL
-        OR last_played_at <= NOW() - INTERVAL 60 MINUTE
-    )
+      AND created_at >= CURRENT_DATE
+      AND created_at <  CURRENT_DATE + INTERVAL '1 day'
+      AND (
+          last_played_at IS NULL
+          OR last_played_at <= NOW() - INTERVAL '60 minutes'
+      )
 ");
-
 $stmtAn->execute([':zone' => $zone]);
 $announcement = $stmtAn->fetchAll(PDO::FETCH_ASSOC);
 
 if (!empty($announcement)) {
-
     try {
-
-        $updateStmt = $pdo->prepare("
-            UPDATE tbl_announcements
-            SET last_played_at = NOW()
-            WHERE ann_id = :id
-        ");
-
-        foreach ($announcement as $row) {
-            $updateStmt->execute([
-                ':id' => $row['ann_id']
-            ]);
-        }
-
-    } catch (Throwable $e) {
-        error_log(
-            'device.php announcement update failed: ' .
-            $e->getMessage()
+        $updateStmt = $pdo->prepare(
+            'UPDATE tbl_announcements SET last_played_at = NOW() WHERE ann_id = :id'
         );
+        foreach ($announcement as $row) {
+            $updateStmt->execute([':id' => $row['ann_id']]);
+        }
+    } catch (Throwable $e) {
+        error_log('device.php announcement update failed: ' . $e->getMessage());
     }
 
     echo json_encode([
         'priority' => 'announcements',
-        'data'     => $announcement
+        'data'     => $announcement,
     ]);
-
     exit;
 }
 
-
-
-
-//Events
+// ---- Events --------------------------------------------------
+// MySQL: CURDATE()   ?  PostgreSQL: CURRENT_DATE
+// MySQL: is_deleted = 0  ?  PostgreSQL: is_deleted = FALSE
 $stmtEvt = $pdo->prepare(
     "SELECT *
-    FROM tbl_events
-    WHERE is_deleted = 0
-    AND event_date >= CURDATE()
-    AND (zones = 'All' OR zones = :zone)
-    ORDER BY event_date ASC"
+     FROM tbl_events
+     WHERE is_deleted = FALSE
+       AND event_date >= CURRENT_DATE
+       AND (zones = 'All' OR zones = :zone)
+     ORDER BY event_date ASC"
 );
 $stmtEvt->execute([':zone' => $zone]);
 $events = $stmtEvt->fetchAll(PDO::FETCH_ASSOC);
+
 if (!empty($events)) {
     echo json_encode([
         'priority' => 'events',
-        'data'     => $events
+        'data'     => $events,
     ]);
-
     exit;
 }
 
-
-echo json_encode(['priority' =>  date("D") ]);
+echo json_encode(['priority' => date('D')]);
 exit;
