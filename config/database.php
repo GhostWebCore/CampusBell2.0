@@ -9,7 +9,7 @@ function get_db_connection(): PDO
         return $pdo;
     }
 
-    $host   = getenv('DB_HOST') ?: 'dpg-d8tn8j67r5hc73aik9ig-a';
+    $host   = getenv('DB_HOST') ?: 'dpg-d8tn8j67r5hc73aik9ig-a.oregon-postgres.render.com';
     $port   = getenv('DB_PORT') ?: '5432';
     $dbname = getenv('DB_NAME') ?: 'campus_bell';
     $user   = getenv('DB_USER') ?: 'campus_bell_user';
