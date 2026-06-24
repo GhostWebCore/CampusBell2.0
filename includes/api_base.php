@@ -6,4 +6,5 @@ $protocol = (
 	(!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
     ) ? "https" : "http";
 
-$API_BASED = $protocol . "://" . $_SERVER['HTTP_HOST'] . "/" . $base . "/api/";
+//$API_BASED = $protocol . "://" . $_SERVER['HTTP_HOST'] . "/" . $base . "/api/";
+$API_BASED = $protocol . "://" . $_SERVER['HTTP_HOST'] . "/api/";
